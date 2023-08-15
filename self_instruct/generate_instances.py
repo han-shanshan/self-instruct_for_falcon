@@ -8,6 +8,9 @@ import pandas as pd
 from collections import OrderedDict
 from gpt3_api import make_requests as make_gpt3_requests
 from templates.instance_gen_template import output_first_template_for_clf, input_first_template_for_gen
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import transformers
+import torch
 
 
 random.seed(42)
@@ -77,6 +80,14 @@ def parse_args():
     return parser.parse_args()
 
 
+def load_model():
+    model = "tiiuae/falcon-7b"
+    tokenizer = AutoTokenizer.from_pretrained(model)
+    pipeline = transformers.pipeline("text-generation", model=model, tokenizer=tokenizer, torch_dtype=torch.bfloat16, trust_remote_code=True, device_map="auto")
+    return tokenizer, pipeline
+
+
+
 if __name__ == '__main__':
     args = parse_args()
 
@@ -117,6 +128,8 @@ if __name__ == '__main__':
         print(f"Loaded {len(existing_requests)} existing requests")
 
     progress_bar = tqdm.tqdm(total=len(tasks))
+
+    tokenizer, llm_pipline = load_model()
     with open(output_path, "w") as fout:
         for batch_idx in range(0, len(tasks), args.request_batch_size):
             batch = tasks[batch_idx: batch_idx + args.request_batch_size]
@@ -138,26 +151,32 @@ if __name__ == '__main__':
                     else:
                         prompt = input_first_template_for_gen + " " + task["instruction"].strip() + "\n"
                         prompts.append(prompt)
-                results = make_gpt3_requests(
-                    engine=args.engine,
-                    prompts=prompts,
-                    # because the clf template is longer, we need to decrease the max_tokens
-                    max_tokens=300 if any(task_clf_types[task["instruction"]] for task in batch) else 350,
-                    temperature=0,
-                    top_p=0,
-                    frequency_penalty=0,
-                    presence_penalty=1.5,
-                    stop_sequences=[f"Example {args.max_instances_to_generate + 1}", "Task:"],
-                    logprobs=1,
-                    n=1,
-                    best_of=1,
-                    api_key=args.api_key,
-                    organization=args.organization)
+                # results = make_gpt3_requests(
+                #     engine=args.engine,
+                #     prompts=prompts,
+                #     # because the clf template is longer, we need to decrease the max_tokens
+                #     max_tokens=300 if any(task_clf_types[task["instruction"]] for task in batch) else 350,
+                #     temperature=0,
+                #     top_p=0,
+                #     frequency_penalty=0,
+                #     presence_penalty=1.5,
+                #     stop_sequences=[f"Example {args.max_instances_to_generate + 1}", "Task:"],
+                #     logprobs=1,
+                #     n=1,
+                #     best_of=1,
+                #     api_key=args.api_key,
+                #     organization=args.organization)
+                results = []
+
+                for prompt in prompts:
+                    result = llm_pipline(prompt, max_length=200, do_sample=True, top_k=10, num_return_sequences=1, eos_token_id=tokenizer.eos_token_id,)
+                    results.append(result)
                 for i in range(len(batch)):
                     data = batch[i]
                     data["instance_metadata"] = results[i]
-                    if results[i]["response"] is not None:
-                        data["raw_instances"] = results[i]["response"]["choices"][0]["text"]
+                    print(f"results[i]={results[i]}")
+                    if results[i][0]["generated_text"] is not None:
+                        data["raw_instances"] = results[i][0]["generated_text"]   # results[i]["response"]["choices"][0]["text"]
                     else:
                         data["raw_instances"] = ""
                     data = OrderedDict(

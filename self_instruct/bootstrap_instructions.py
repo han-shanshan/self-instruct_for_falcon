@@ -10,10 +10,20 @@ import pandas as pd
 from multiprocessing import Pool
 from functools import partial
 from rouge_score import rouge_scorer
-from gpt3_api import make_requests as make_gpt3_requests
-
+# from gpt3_api import make_requests as make_gpt3_requests
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import transformers
+import torch
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 random.seed(42)
+
+def load_model():
+    model = "tiiuae/falcon-7b"
+    tokenizer = AutoTokenizer.from_pretrained(model)
+    pipeline = transformers.pipeline("text-generation", model=model, tokenizer=tokenizer, torch_dtype=torch.bfloat16, trust_remote_code=True, device_map="auto")
+    return tokenizer, pipeline
 
 
 def encode_prompt(prompt_instructions, classification=False):
@@ -38,10 +48,10 @@ def find_word_in_string(w, s):
     return re.compile(r'\b({0})\b'.format(w), flags=re.IGNORECASE).search(s)
 
 
-def post_process_gpt3_response(response):
-    if response is None or response["choices"][0]["finish_reason"] == "length":
+def post_process_response(response):
+    if response is None:
         return []
-    raw_instructions = re.split(r"\n\d+\s?\. ", response["choices"][0]["text"])
+    raw_instructions = re.split(r"\n\d+\s?\. ", response)
     instructions = []
     for inst in raw_instructions:
         inst = re.sub(r"\s+", " ", inst).strip()
@@ -156,9 +166,12 @@ if __name__ == "__main__":
     if machine_instructions:
         progress_bar.update(len(machine_instructions))
 
+    tokenizer, llm_pipline = load_model()
+
     with open(os.path.join(args.batch_dir, "machine_generated_instructions.jsonl"), "a") as fout:
         while len(machine_instructions) < args.num_instructions_to_generate:
             batch_inputs = []
+            results = []
             for _ in range(args.request_batch_size):
                 # sample machine instructions from the pool
                 prompt_instructions = sample_machine_instructions(
@@ -166,29 +179,20 @@ if __name__ == "__main__":
                     similarities=None,
                     n=2)
                 # sample human instructions from the pool
+                print(f"args.num_prompt_instructions = {args.num_prompt_instructions}")
+                print(f"seed_instructions = {len(seed_instructions)}")
+                print(f"len(prompt_instructions) = {len(prompt_instructions)}")
                 prompt_instructions += random.sample(seed_instructions, args.num_prompt_instructions - len(prompt_instructions))
                 random.shuffle(prompt_instructions)
                 prompt = encode_prompt(prompt_instructions, classification=args.use_clf_seed_tasks_only)
                 batch_inputs.append(prompt)
-            results = make_gpt3_requests(
-                engine=args.engine,
-                prompts=batch_inputs,
-                max_tokens=1024,
-                temperature=0.7,
-                top_p=0.5,
-                frequency_penalty=0,
-                presence_penalty=2,
-                stop_sequences=["\n\n", "\n16", "16.", "16 ."],
-                logprobs=1,
-                n=1,
-                best_of=1,
-                api_key=args.api_key,
-                organization=args.organization,
-            )
+                result = llm_pipline(prompt, max_length=200, do_sample=True, top_k=10, num_return_sequences=1, eos_token_id=tokenizer.eos_token_id,)
+                results.append(result)
             instructions = []
             all_metadata = []
             for result in results:
-                new_instructions = post_process_gpt3_response(result["response"])
+                print(f"generated text: {result[0]['generated_text']}")
+                new_instructions = post_process_response(result[0]['generated_text'])
                 instructions += new_instructions
                 all_metadata += [result] * len(new_instructions)
 
