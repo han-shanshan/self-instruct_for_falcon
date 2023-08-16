@@ -1,0 +1,5 @@
+{"instruction": "Come up with a series of tasks:", "is_classification": " Yes"}
+{"instruction": "Classify the given sentence to the following groups: - \"i like this\"", "is_classification": " Yes"}
+{"instruction": "Given a sentence, tell me", "is_classification": " Yes"}
+{"instruction": "Identify if the sentence contains a logical error.", "is_classification": " No"}
+{"instruction": "Given the following information, tell me whether you like it.", "is_classification": " No"}
